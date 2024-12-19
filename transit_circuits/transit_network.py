@@ -182,10 +182,10 @@ class TransitNetwork():
 
 
     def calculate_flows(self, OD_trips:np.array, origins = None, destinations = None):
-        origins = origins or self.stations
-        destinations = destinations or self.stations
-
+        origins = origins or OD_trips.keys()
         for origin in tqdm(origins):
+            if not destinations:
+                destinations = OD_trips[origin].keys()
             for destination in destinations:
                 if origin == destination:
                     continue
