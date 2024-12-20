@@ -57,10 +57,10 @@ def _make_stations_grid(D):
 
 def _make_lines_grid(stations):
     return [
-        Line(0, [stations[0], stations[3], stations[7], stations[10]], avg_speed=30, frequency=10),
-        Line(1, [stations[1], stations[4], stations[8], stations[11]], avg_speed=30, frequency=10),
-        Line(2, [stations[2], stations[3], stations[4], stations[5]],  avg_speed=30, frequency=20),
-        Line(3, [stations[6], stations[7], stations[8], stations[9]],  avg_speed=30, frequency=5),
+        Line(0, [stations[0], stations[3], stations[7], stations[10]], avg_speed=40, frequency=10),
+        Line(1, [stations[1], stations[4], stations[8], stations[11]], avg_speed=40, frequency=10),
+        Line(2, [stations[2], stations[3], stations[4], stations[5]],  avg_speed=40, frequency=20),
+        Line(3, [stations[6], stations[7], stations[8], stations[9]],  avg_speed=40, frequency=20),
     ]
 
 def make_grid():
@@ -68,4 +68,4 @@ def make_grid():
     stations = _make_stations_grid(D)
     lines = _make_lines_grid(stations)
 
-    return TransitNetwork(D, stations, lines)
+    return TransitNetwork(D, stations, lines), D, stations, lines

@@ -183,6 +183,7 @@ class TransitNetwork():
 
     def calculate_flows(self, OD_trips:np.array, origins = None, destinations = None):
         origins = origins or OD_trips.keys()
+        problems = []
         for origin in tqdm(origins):
             if not destinations:
                 destinations = OD_trips[origin].keys()
@@ -192,7 +193,35 @@ class TransitNetwork():
                 p = Problem()
                 self._build_subcircuit(origin, destination, OD_trips[origin][destination], p)
                 p.solve()
+                problems.append(p)
+        return problems
     
+    def reset(self):
+        """Resets all component histories in the network."""
+        for station in self.stations:
+            for line in station.lines:
+                for direction in (-1, +1):
+                    segment = station.lines[line][direction]
+
+                    # Reset line segment components
+                    if segment.tt_resistor:
+                        segment.tt_resistor.reset()
+                    segment.td_diode.reset()
+
+                # Reset transfer components
+                for transfer_dict in [station._transfer_resistors, station._transfer_diodes]:
+                    for components in transfer_dict[line][direction].values():
+                        for component in components.values():
+                            component.reset()
+
+        # Reset trip components
+        for origin in self.trips:
+            for destination, trip in self.trips[origin].items():
+                if trip:
+                    for component in trip._origin_resistors + trip._destination_diodes:
+                        component.reset()
+                    trip._current_source.reset()
+
     def plot(self):
         """
         Plots a transit network.
@@ -241,7 +270,107 @@ class TransitNetwork():
         plt.axis("off")
         plt.show()
     
-    def plot_flow(self, ax=None):
+    def plot_frequency(self, ax=None):
+        """
+        Plots the transit network with line frequencies visualized as edge thickness.
+        Line colors correspond to their respective lines, and a legend explains the width scaling.
+        """
+        if ax is None:
+            _, ax = plt.subplots(figsize=(10, 10))
+
+        G = nx.Graph()  # Use an undirected graph
+
+        # Assign distinct colors to lines
+        line_colors = plt.cm.tab10.colors  # Use colormap (tab10 has 10 distinct colors)
+        line_color_map = {line.id: line_colors[i % len(line_colors)] for i, line in enumerate(self.lines)}
+
+        # Add nodes with positions
+        pos = {}
+        for station in self.stations:
+            G.add_node(station.id)
+            pos[station.id] = (station.x, station.y) if station.x is not None and station.y is not None else (station.id, 0)
+
+        # Add edges with frequencies and colors
+        edge_frequencies = {}
+        edge_colors = {}
+        for line in self.lines:
+            for i in range(len(line.stations) - 1):
+                s1 = line.stations[i].id
+                s2 = line.stations[i + 1].id
+
+                # Use frequency of the line for thickness
+                frequency = line.frequency if isinstance(line.frequency, (int, float)) else line.frequency.value
+                edge_frequencies[(s1, s2)] = frequency
+                edge_colors[(s1, s2)] = line_color_map[line.id]
+
+                # Add edges to the graph
+                G.add_edge(s1, s2)
+
+        # Draw nodes
+        nx.draw_networkx_nodes(G, pos, node_size=300, node_color="black", ax=ax)
+        nx.draw_networkx_labels(G, pos, font_size=10, font_color="white", ax=ax)
+
+        # Find max frequency to scale edge widths
+        max_frequency = max(edge_frequencies.values()) if edge_frequencies else 1
+
+        # Draw edges with thickness proportional to frequency and color-coded by line
+        for u, v, _ in G.edges(data=True):
+            frequency = edge_frequencies.get((u, v), 0)
+            width = (frequency / max_frequency) * 10  # Scale to a max width of 10
+            color = edge_colors.get((u, v), "grey")
+
+            nx.draw_networkx_edges(
+                G, pos, edgelist=[(u, v)], width=width, edge_color=color, ax=ax
+            )
+
+        # Create a legend for line widths and colors
+        legend_elements = [
+            plt.Line2D([0], [0], color=color, lw=2, label=f"Line {line.id}")
+            for line in self.lines if hasattr(line, 'id') for color in [line_color_map[line.id]]
+        ]
+        legend_elements.append(
+            plt.Line2D([0], [0], color="black", lw=2, label=f"Max Width = {max_frequency}")
+        )
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_visible(False)
+        ax.spines['bottom'].set_visible(False)
+        ax.set_title("Transit Network Frequencies")
+        plt.axis("off")
+        plt.show()
+
+    def plot_od_demand(self, OD_trips, ax=None):
+        """
+        Visualizes the origin-destination demand matrix as directed edges.
+        """
+        if ax is None:
+            _, ax = plt.subplots(figsize=(10, 10))
+
+        G = nx.DiGraph()
+        pos = {station.id: (station.x, station.y) if station.x is not None and station.y is not None else (station.id, 0) for station in self.stations}
+        G.add_nodes_from(pos.keys())
+
+        # Add edges based on OD trips
+        max_demand = max(max(trips.values()) for trips in OD_trips.values())
+        for origin, destinations in OD_trips.items():
+            for destination, demand in destinations.items():
+                if demand > 0:
+                    G.add_edge(origin.id, destination.id, weight=demand)
+
+        # Scale edge widths by demand
+        for u, v, data in G.edges(data=True):
+            demand = data['weight']
+            width = (demand / max_demand) * 10
+            nx.draw_networkx_edges(G, pos, edgelist=[(u, v)], width=width, edge_color="red", ax=ax)
+
+        nx.draw_networkx_nodes(G, pos, node_size=300, node_color="black", ax=ax)
+        nx.draw_networkx_labels(G, pos, font_size=10, font_color="white", ax=ax)
+
+        ax.set_title("Origin-Destination Demand")
+        plt.axis("off")
+        plt.show()
+
+    def plot_flow(self, ax=None, label_fraction=0.5, round=0):
         """
         Plots the transit network with flow values visualized as edge widths and edges colored by lines.
         Station positions use x and y coordinates if available, edges are curved, and labels are offset to the right.
@@ -300,38 +429,39 @@ class TransitNetwork():
         for edge in G.edges(data=True):
             u, v, _ = edge
             flow = edge_flows.get((u, v), 0)
-            width = (flow / max_flow) * 10  # Scale the flow to a max width of 10
+            width = np.round((flow / max_flow) * 7)  # Scale the flow to a max width of 10
             color = edge_colors.get((u, v), "grey")
-
             # Use a curved connection style for bidirectional edges
             if G.has_edge(v, u):  # Check for reverse edge
                 connectionstyle = "arc3,rad=0.2"  # Arch with curvature radius 0.2
             else:
                 connectionstyle = "arc3,rad=0"  # Straight line
-
-            nx.draw_networkx_edges(
-                G, pos, edgelist=[(u, v)], width=width, edge_color=color, ax=ax,
-                connectionstyle=connectionstyle,
-                arrowstyle="simple"  # Fancy arrows
-            )
+            if width > 0:
+                nx.draw_networkx_edges(
+                    G, pos, edgelist=[(u, v)], width=width, edge_color=color, ax=ax,
+                    connectionstyle=connectionstyle,
+                    arrowstyle="simple"  # Fancy arrows
+                )
         # Offset edge labels to the right of each edge
-        edge_labels = {(u, v): f"{flow:.0f}" for (u, v), flow in edge_flows.items()}
+        # Position edge labels closer to the start of the edge
+        edge_labels = {(u, v): f"{flow:.{round}f}" for (u, v), flow in edge_flows.items() if flow > 1e-4}
         for (u, v), label in edge_labels.items():
             # Calculate edge vector
             x1, y1 = pos[u]
             x2, y2 = pos[v]
             dx, dy = x2 - x1, y2 - y1
 
-            # Rotate vector by 90 degrees and normalize it
+            # Scale the vector to be closer to the source node
+            label_pos_x = x1 + label_fraction * dx
+            label_pos_y = y1 + label_fraction * dy
+
+            # Apply a perpendicular offset for clarity
             length = (dx**2 + dy**2)**0.5
             offset_x = dy / length * 0.1  # Perpendicular offset (scaled)
-            offset_y = -dx / length * 0.1   # Perpendicular offset (scaled)
+            offset_y = -dx / length * 0.1  # Perpendicular offset (scaled)
 
-            # Position label slightly offset to the right of the edge
-            label_pos = (
-                (x1 + x2) / 2 + offset_x,  # Midpoint + offset
-                (y1 + y2) / 2 + offset_y
-            )
+            # Final label position
+            label_pos = (label_pos_x + offset_x, label_pos_y + offset_y)
             ax.text(label_pos[0], label_pos[1], label, fontsize=12, ha="center", va="center")
 
         # Add legend for line colors

@@ -10,6 +10,9 @@ class Component():
     
     def cache(self):
         self.history = np.append(self.history, self.voltage.value)
+    
+    def reset(self):
+        self.history = np.array([])
 
 class Resistor(Component):
     def __init__(self, C, source, drain):
