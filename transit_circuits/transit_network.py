@@ -473,7 +473,7 @@ class TransitNetwork():
 
             # Apply a perpendicular offset for clarity
             length = (dx**2 + dy**2)**0.5
-            offset_x = dy / length * 0.1  # Perpendicular offset (scaled)
+            offset_x = dy / length * 0.2  # Perpendicular offset (scaled)
             offset_y = -dx / length * 0.1  # Perpendicular offset (scaled)
 
             # Final label position

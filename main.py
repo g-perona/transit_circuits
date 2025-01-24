@@ -25,12 +25,12 @@ with PdfPages(f'figs/transit_network_plots{dt.now():%Y-%m-%d_%H:%M}.pdf') as pdf
     pdf.savefig(fig)
     plt.close()
 
-    fig, ax = grid_all_pairs_line_3(line_3_freq=60/headways[-1], tod=None)
-    pdf.savefig(fig)
-    plt.close()
+    # fig, ax = grid_all_pairs_line_3(line_3_freq=60/headways[-1], tod=None)
+    # pdf.savefig(fig)
+    # plt.close()
 
-    fig, ax = grid_all_pairs_line_3_list(headways=headways, tod=None)
-    pdf.savefig(fig)
-    plt.close()
+    # fig, ax = grid_all_pairs_line_3_list(headways=headways, tod=None)
+    # pdf.savefig(fig)
+    # plt.close()
 
 print("Plots saved to 'transit_network_plots.pdf'.")
