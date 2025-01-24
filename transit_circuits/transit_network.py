@@ -9,16 +9,25 @@ import numpy as np
 from tqdm import tqdm
 
 class Line():
-    def __init__(self, id, stations=[], avg_speed=10, frequency=None):
+    def __init__(self, id, stations=[], avg_speed=10, frequency=None, headway=None):
 
         self.id = id
         self.stations = stations
         self.avg_speed = avg_speed
 
-        if frequency is None:
-            self.frequency = cp.Variable()
-        else:
+        if frequency is None and headway is None:
+            raise ValueError("Either frequency or headway must be specified.")
+        
+        if frequency is not None:
             self.frequency = frequency
+
+        if frequency is not None and headway is not None:
+            raise Warning("Both frequency and headway are specified. Using frequency.")
+
+        if headway is not None:
+            self.frequency = 60/headway
+
+        self.frequency = frequency
 
 class _LineSegment():
     def __init__(self, line, travel_time):
@@ -195,7 +204,7 @@ class TransitNetwork():
                 p.solve()
                 problems.append(p)
         return problems
-    
+
     def reset(self):
         """Resets all component histories in the network."""
         for station in self.stations:
@@ -222,7 +231,7 @@ class TransitNetwork():
                         component.reset()
                     trip._current_source.reset()
 
-    def plot(self):
+    def plot(self, line_styles={}):
         """
         Plots a transit network.
         """
@@ -253,13 +262,17 @@ class TransitNetwork():
         
         # Draw lines
         for line in self.lines:
+            if line in line_styles.keys():
+                style = line_styles[line]
+            else:
+                style = 'solid'
             edges = []
             for i in range(len(line.stations) - 1):
                 station1 = line.stations[i].id
                 station2 = line.stations[i + 1].id
                 edges.append((station1, station2))
                 edges.append((station2, station1))
-            nx.draw_networkx_edges(G, pos, edgelist=edges, width=2, edge_color=line_color_map[line.id], label=f"Line {line.id}")
+            nx.draw_networkx_edges(G, pos, edgelist=edges, width=2, edge_color=line_color_map[line.id], label=f"Line {line.id}", style=style)
         
         # Create legend
         legend_elements = [plt.Line2D([0], [0], color=line_color_map[line.id], lw=2, label=f"Line {line.id}") for line in self.lines]
@@ -267,10 +280,10 @@ class TransitNetwork():
         
         # Display plot
         plt.title("Transit Network")
-        plt.axis("off")
-        plt.show()
+        # plt.axis("off")
+        # plt.show()
     
-    def plot_frequency(self, ax=None):
+    def plot_frequency(self, ax=None, line_styles={}):
         """
         Plots the transit network with line frequencies visualized as edge thickness.
         Line colors correspond to their respective lines, and a legend explains the width scaling.
@@ -293,6 +306,7 @@ class TransitNetwork():
         # Add edges with frequencies and colors
         edge_frequencies = {}
         edge_colors = {}
+        edge_styles = {}
         for line in self.lines:
             for i in range(len(line.stations) - 1):
                 s1 = line.stations[i].id
@@ -302,6 +316,7 @@ class TransitNetwork():
                 frequency = line.frequency if isinstance(line.frequency, (int, float)) else line.frequency.value
                 edge_frequencies[(s1, s2)] = frequency
                 edge_colors[(s1, s2)] = line_color_map[line.id]
+                edge_styles[(s1, s2)] = line_styles.get(line, "solid")
 
                 # Add edges to the graph
                 G.add_edge(s1, s2)
@@ -318,9 +333,10 @@ class TransitNetwork():
             frequency = edge_frequencies.get((u, v), 0)
             width = (frequency / max_frequency) * 10  # Scale to a max width of 10
             color = edge_colors.get((u, v), "grey")
+            style = edge_styles[(u, v)]
 
             nx.draw_networkx_edges(
-                G, pos, edgelist=[(u, v)], width=width, edge_color=color, ax=ax
+                G, pos, edgelist=[(u, v)], width=width, edge_color=color, ax=ax, style=style
             )
 
         # Create a legend for line widths and colors
@@ -336,8 +352,8 @@ class TransitNetwork():
         ax.spines['left'].set_visible(False)
         ax.spines['bottom'].set_visible(False)
         ax.set_title("Transit Network Frequencies")
-        plt.axis("off")
-        plt.show()
+        # plt.axis("off")
+        # plt.show()
 
     def plot_od_demand(self, OD_trips, ax=None):
         """
@@ -367,8 +383,8 @@ class TransitNetwork():
         nx.draw_networkx_labels(G, pos, font_size=10, font_color="white", ax=ax)
 
         ax.set_title("Origin-Destination Demand")
-        plt.axis("off")
-        plt.show()
+        # plt.axis("off")
+        # plt.show()
 
     def plot_flow(self, ax=None, label_fraction=0.5, round=0):
         """
@@ -473,5 +489,5 @@ class TransitNetwork():
 
         # Title and cleanup
         ax.set_title("Transit Network Flows")
-        plt.axis("off")
-        plt.show()
+        # plt.axis("off")
+        # plt.show()
