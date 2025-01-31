@@ -8,42 +8,68 @@ import numpy as np
 
 from tqdm import tqdm
 
+import json
+
 class Line():
-    def __init__(self, id, stations=[], avg_speed=10, frequency=None, headway=None):
+    '''
+    A class representing a transit line, that keeps track of order of the stations it serves, its own speed,
+    and its own service frequency.
+    Attributes:
+    - id: the identification number of the line
+    - stations: the list of stations in the order that they are served in the positive direction.
+    - avg_speed_kpm: the average speed of the line in kilometers per minute.
+    - frequency_vpm: the frequency with which the line's vehicles serve the stations in vehicles per minute.
+    '''
+    def __init__(self, id:int, stations:list = [], avg_speed_kph=10, frequency_vph=None, headway_mpv=None):
+        '''
+        Constructor for a transit line.
+        Parameters:
+        - id: The identification number of the line.
+        - stations: A list of Station objects.
+        - avg_speed_kmh: The average speed of the line in kilometers per hour.
+        - frequency_vph: The frequency of the line in vehicles per hour.
+        - headway_mpv: The headway of the line in minutes per vehicle. Ignored if frequency is specified
+        '''
 
         self.id = id
         self.stations = stations
-        self.avg_speed = avg_speed
+        self.avg_speed_kpm = avg_speed_kph / 60 # Speed in km/minute
 
-        if frequency is None and headway is None:
+        if frequency_vph is None and headway_mpv is None:
             raise ValueError("Either frequency or headway must be specified.")
         
-        if frequency is not None:
-            self.frequency = frequency
+        if frequency_vph is not None:
+            self.frequency_vpm = frequency_vph / 60
 
-        if frequency is not None and headway is not None:
+        if frequency_vph is not None and headway_mpv is not None:
             raise Warning("Both frequency and headway are specified. Using frequency.")
 
-        if headway is not None:
-            self.frequency = 60/headway
+        if headway_mpv is not None:
+            self.frequency_vpm = 60/headway_mpv
 
-        self.frequency = frequency
+    def _update_frequency(self, frequency_vph):
+        self.frequency_vpm = frequency_vph/60
+        for s in self.stations:
+            s._update_frequency(self, self.frequency_vpm)
+    
+    def get_headway(self):
+        return 60/self.frequency_vpm
 
 class _LineSegment():
-    def __init__(self, line, travel_time):
+    def __init__(self, line:Line, D_km):
         self.v_station = cp.Variable()
         self.v_diode = cp.Variable()
 
         self.td_diode = Diode(self.v_station, self.v_diode)
         
         self.line = line
-        self.travel_time = travel_time
+        self.travel_time_m = D_km / line.avg_speed_kpm
 
         self.tt_resistor = None
     
     def _make_resistor(self, v_next):
         self.v_next = v_next
-        self.tt_resistor = TTResistor(self.travel_time, self.v_diode, self.v_next)
+        self.tt_resistor = TTResistor(self.travel_time_m, self.v_diode, self.v_next)
 
 class Station():
     def __init__(self, id, x=None, y=None):
@@ -54,7 +80,7 @@ class Station():
         self.x = x
         self.y = y
 
-    def _add_transfer_components(self, l1):
+    def _add_transfer_components(self, l1:Line):
         self._transfer_diodes[l1] = {
             +1:{l:{+1:{}, -1:{}} for l in self.lines if l != l1}, 
             -1:{l:{+1:{}, -1:{}} for l in self.lines if l != l1}
@@ -75,10 +101,9 @@ class Station():
                     v_diode2 = cp.Variable()
                     self._transfer_diodes[l1][d_l1][l2][d_l2] = Diode(self.lines[l1][d_l1].v_station, v_diode1)
                     self._transfer_diodes[l2][d_l2][l1][d_l1] = Diode(self.lines[l2][d_l2].v_station, v_diode2)
-                    self._transfer_resistors[l1][d_l1][l2][d_l2] = TransferResistor(l2.frequency, v_diode1, self.lines[l2][d_l2].v_diode)
-                    self._transfer_resistors[l2][d_l2][l1][d_l1] = TransferResistor(l1.frequency, v_diode2, self.lines[l1][d_l1].v_diode)
+                    self._transfer_resistors[l1][d_l1][l2][d_l2] = TransferResistor(l2.frequency_vpm, v_diode1, self.lines[l2][d_l2].v_diode)
+                    self._transfer_resistors[l2][d_l2][l1][d_l1] = TransferResistor(l1.frequency_vpm, v_diode2, self.lines[l1][d_l1].v_diode)
 
-    
     def add_line(self, line, seg_next, seg_prev):
         self.lines[line] = {
             +1: seg_next,
@@ -87,7 +112,7 @@ class Station():
         
         self._add_transfer_components(line)
 
-    def get_transfer_diodes(self, line1, line2):
+    def get_transfer_diodes(self, line1: Line, line2: Line) -> list[Diode]:
         return [
             self._transfer_diodes[line1][+1][line2][+1],
             self._transfer_diodes[line1][+1][line2][-1],
@@ -95,13 +120,20 @@ class Station():
             self._transfer_diodes[line1][-1][line2][-1]
         ]
     
-    def get_transfer_resistors(self, line1, line2):
+    def get_transfer_resistors(self, line1: Line, line2: Line) -> list[TransferResistor]:
         return [
             self._transfer_resistors[line1][+1][line2][+1],
             self._transfer_resistors[line1][+1][line2][-1],
             self._transfer_resistors[line1][-1][line2][+1],
             self._transfer_resistors[line1][-1][line2][-1]
         ]
+    
+    def _update_frequency(self, line, frequency_vpm):
+        for l in self.lines:
+            if l == line: continue
+            tr = self.get_transfer_resistors(l, line)
+            for r in tr:
+                r.update_frequency(line.frequency_vpm)
 
 class Trip():
     def __init__(self, origin: Station, destination: Station, flow):
@@ -118,8 +150,17 @@ class Trip():
             self._destination_diodes.append(Diode(destination.lines[line][+1].v_station, self._v_destination))
             self._destination_diodes.append(Diode(destination.lines[line][-1].v_station, self._v_destination))
         for line in self.origin.lines:
-            self._origin_resistors.append(TransferResistor(line.frequency, self._v_origin, self.origin.lines[line][+1].v_diode))
-            self._origin_resistors.append(TransferResistor(line.frequency, self._v_origin, self.origin.lines[line][-1].v_diode))
+            self._origin_resistors.append(TransferResistor(line.frequency_vpm, self._v_origin, self.origin.lines[line][+1].v_diode))
+            self._origin_resistors.append(TransferResistor(line.frequency_vpm, self._v_origin, self.origin.lines[line][-1].v_diode))
+
+    def _update_frequency(self):
+        self._origin_resistors = []
+        self._destination_diodes = []
+
+        for line in self.origin.lines:
+            self._origin_resistors.append(TransferResistor(line.frequency_vpm, self._v_origin, self.origin.lines[line][+1].v_diode))
+            self._origin_resistors.append(TransferResistor(line.frequency_vpm, self._v_origin, self.origin.lines[line][-1].v_diode))
+
 
 class TransitNetwork():
     def _parse_station_coords(self):
@@ -134,27 +175,26 @@ class TransitNetwork():
         self.lines = lines
         self.trips = {o:{d:None for d in self.stations} for o in self.stations}
         self._parse_station_coords()
+        self._disaggregated_currents = {}
 
         for line in self.lines:
             for i, station in enumerate(line.stations):
                 if i+1 < len(line.stations):
                     next_station = line.stations[i+1]
                     D_next = D[station.id, next_station.id]
-                    tt_next = D_next / line.avg_speed
                 else:
-                    tt_next = np.inf
+                    D_next = np.inf
                 if i > 0:
                     prev_station = line.stations[i-1]
                     D_prev =  D[station.id, prev_station.id]
-                    tt_prev = D_prev / line.avg_speed
                 else:
-                    tt_prev = np.inf
-
-                seg_next = _LineSegment(line, tt_next)
-                seg_prev = _LineSegment(line, tt_prev)
+                    D_prev = np.inf
+                
+                seg_next = _LineSegment(line, D_next)
+                seg_prev = _LineSegment(line, D_prev)
                 
                 station.add_line(line, seg_next, seg_prev)
-
+                
                 if i > 0:
                     prev_station.lines[line][+1]._make_resistor(seg_next.v_station)
                     seg_prev._make_resistor(prev_station.lines[line][-1].v_station)
@@ -189,8 +229,34 @@ class TransitNetwork():
         problem.add_current_source(t._current_source)
         problem._add_constraint(t._v_origin == 0)
 
+    def _save_disaggregated(self, _save_disaggregated, origin, destination):
+        if not _save_disaggregated:
+            return
+        
+        self._disaggregated_currents[origin] = self._disaggregated_currents.get(origin, {})
+        self._disaggregated_currents[origin][destination] = self._disaggregated_currents[origin].get(destination, {})
+        disagg_od = self._disaggregated_currents[origin][destination]
 
-    def calculate_flows(self, OD_trips:np.array, origins = None, destinations = None):
+        for s in self.stations:
+            for line in s.lines:
+                seg = s.lines[line]
+
+                R_next = seg[+1].tt_resistor
+                R_prev = seg[-1].tt_resistor
+
+                if R_next is not None:
+                    I_next = R_next.history[-1] * R_next.C
+                else:
+                    I_next = 0
+                if R_prev is not None:
+                    I_prev = R_prev.history[-1] * R_prev.C
+                else:
+                    I_prev = 0
+
+                disagg_od[s] = disagg_od.get(s, {})
+                disagg_od[s][line] = {+1: I_next, -1: I_prev}
+
+    def calculate_flows(self, OD_trips:np.array, origins = None, destinations = None, _save_disaggregated=False):
         origins = origins or OD_trips.keys()
         problems = []
         for origin in tqdm(origins):
@@ -202,6 +268,7 @@ class TransitNetwork():
                 p = Problem()
                 self._build_subcircuit(origin, destination, OD_trips[origin][destination], p)
                 p.solve()
+                self._save_disaggregated(_save_disaggregated, origin, destination)
                 problems.append(p)
         return problems
 
@@ -230,264 +297,68 @@ class TransitNetwork():
                     for component in trip._origin_resistors + trip._destination_diodes:
                         component.reset()
                     trip._current_source.reset()
+        
+        self._disaggregated_currents = {}
 
-    def plot(self, line_styles={}):
-        """
-        Plots a transit network.
-        """
-        # Create a NetworkX graph
-        G = nx.DiGraph()
-        
-        # Add nodes (stations)
-        for station in self.stations:
-            station_id = station.id
-            G.add_node(station_id, pos=(station_id, 0))  # Example positioning; adjust as needed.
-        
-        # Add edges (connections between stations)
-        for i in range(self.D.shape[0]):
-            for j in range(i + 1, self.D.shape[1]):
-                if self.D[i, j] > 0:  # Add an edge if there's a connection
-                    G.add_edge(i, j, weight=self.D[i, j])
-                    G.add_edge(j, i, weight=self.D[i, j])
-
-        
-        # Define colors for lines
-        line_colors = plt.cm.tab10.colors  # Use a colormap for distinct colors
-        line_color_map = {line.id: line_colors[i % len(line_colors)] for i, line in enumerate(self.lines)}
-        
-        # Plot the graph
-        pos = nx.spring_layout(G, seed=42)  # Use spring layout for positioning
-        nx.draw_networkx_nodes(G, pos, node_size=300, node_color="black")
-        nx.draw_networkx_labels(G, pos, font_size=10, font_color="white")
-        
-        # Draw lines
-        for line in self.lines:
-            if line in line_styles.keys():
-                style = line_styles[line]
-            else:
-                style = 'solid'
-            edges = []
-            for i in range(len(line.stations) - 1):
-                station1 = line.stations[i].id
-                station2 = line.stations[i + 1].id
-                edges.append((station1, station2))
-                edges.append((station2, station1))
-            nx.draw_networkx_edges(G, pos, edgelist=edges, width=2, edge_color=line_color_map[line.id], label=f"Line {line.id}", style=style)
-        
-        # Create legend
-        legend_elements = [plt.Line2D([0], [0], color=line_color_map[line.id], lw=2, label=f"Line {line.id}") for line in self.lines]
-        plt.legend(handles=legend_elements, loc="best")
-        
-        # Display plot
-        plt.title("Transit Network")
-        # plt.axis("off")
-        # plt.show()
+    def update_headway(self, line: Line, headway_mpv):
+        frequency_vph = 60/headway_mpv
+        self.update_frequency(line=line, frequency_vph=frequency_vph)
     
-    def plot_frequency(self, ax=None, line_styles={}):
+    def update_frequency(self, line:Line, frequency_vph):
+        if isinstance(line, Line):
+            line._update_frequency(frequency_vph)
+        else:
+            raise ValueError("Pass a Line object, not a line id.")
+        
+        for o, trips_o in self.trips.items():
+            for d, trips_od in self.trips[o].items():
+                if o == d or trips_od is None: continue
+                trips_od._update_frequency()
+    
+    def save_state(self, filename="transit_network_state.json"):
         """
-        Plots the transit network with line frequencies visualized as edge thickness.
-        Line colors correspond to their respective lines, and a legend explains the width scaling.
+        Saves the current state of the transit network to a text file.
+        
+        Parameters:
+        - filename (str): Name of the file to save the state.
         """
-        if ax is None:
-            _, ax = plt.subplots(figsize=(10, 10))
 
-        G = nx.Graph()  # Use an undirected graph
+        # Prepare station data
+        station_data = [{
+            "id": station.id,
+            "x": station.x,
+            "y": station.y
+        } for station in self.stations]
 
-        # Assign distinct colors to lines
-        line_colors = plt.cm.tab10.colors  # Use colormap (tab10 has 10 distinct colors)
-        line_color_map = {line.id: line_colors[i % len(line_colors)] for i, line in enumerate(self.lines)}
+        # Prepare line data
+        line_data = [{
+            "id": line.id,
+            "stations": [station.id for station in line.stations],
+            "avg_speed_kpm": line.avg_speed_kpm,
+            "frequency_vpm": line.frequency_vpm
+        } for line in self.lines]
 
-        # Add nodes with positions
-        pos = {}
-        for station in self.stations:
-            G.add_node(station.id)
-            pos[station.id] = (station.x, station.y) if station.x is not None and station.y is not None else (station.id, 0)
+        # Prepare trips data
+        trip_data = []
+        for origin, destinations in self.trips.items():
+            for destination, trip in destinations.items():
+                if trip:
+                    trip_data.append({
+                        "origin": origin.id,
+                        "destination": destination.id,
+                        "flow": trip.flow
+                    })
 
-        # Add edges with frequencies and colors
-        edge_frequencies = {}
-        edge_colors = {}
-        edge_styles = {}
-        for line in self.lines:
-            for i in range(len(line.stations) - 1):
-                s1 = line.stations[i].id
-                s2 = line.stations[i + 1].id
+        # Create a dictionary of the network state
+        network_state = {
+            "stations": station_data,
+            "lines": line_data,
+            "trips": trip_data
+        }
 
-                # Use frequency of the line for thickness
-                frequency = line.frequency if isinstance(line.frequency, (int, float)) else line.frequency.value
-                edge_frequencies[(s1, s2)] = frequency
-                edge_colors[(s1, s2)] = line_color_map[line.id]
-                edge_styles[(s1, s2)] = line_styles.get(line, "solid")
+        # Save to file in JSON format for readability
+        with open(filename, "w") as file:
+            json.dump(network_state, file, indent=4)
 
-                # Add edges to the graph
-                G.add_edge(s1, s2)
-
-        # Draw nodes
-        nx.draw_networkx_nodes(G, pos, node_size=300, node_color="black", ax=ax)
-        nx.draw_networkx_labels(G, pos, font_size=10, font_color="white", ax=ax)
-
-        # Find max frequency to scale edge widths
-        max_frequency = max(edge_frequencies.values()) if edge_frequencies else 1
-
-        # Draw edges with thickness proportional to frequency and color-coded by line
-        for u, v, _ in G.edges(data=True):
-            frequency = edge_frequencies.get((u, v), 0)
-            width = (frequency / max_frequency) * 10  # Scale to a max width of 10
-            color = edge_colors.get((u, v), "grey")
-            style = edge_styles[(u, v)]
-
-            nx.draw_networkx_edges(
-                G, pos, edgelist=[(u, v)], width=width, edge_color=color, ax=ax, style=style
-            )
-
-        # Create a legend for line widths and colors
-        legend_elements = [
-            plt.Line2D([0], [0], color=color, lw=2, label=f"Line {line.id}")
-            for line in self.lines if hasattr(line, 'id') for color in [line_color_map[line.id]]
-        ]
-        legend_elements.append(
-            plt.Line2D([0], [0], color="black", lw=2, label=f"Max Width = {max_frequency}")
-        )
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        ax.spines['left'].set_visible(False)
-        ax.spines['bottom'].set_visible(False)
-        ax.set_title("Transit Network Frequencies")
-        # plt.axis("off")
-        # plt.show()
-
-    def plot_od_demand(self, OD_trips, ax=None):
-        """
-        Visualizes the origin-destination demand matrix as directed edges.
-        """
-        if ax is None:
-            _, ax = plt.subplots(figsize=(10, 10))
-
-        G = nx.DiGraph()
-        pos = {station.id: (station.x, station.y) if station.x is not None and station.y is not None else (station.id, 0) for station in self.stations}
-        G.add_nodes_from(pos.keys())
-
-        # Add edges based on OD trips
-        max_demand = max(max(trips.values()) for trips in OD_trips.values())
-        for origin, destinations in OD_trips.items():
-            for destination, demand in destinations.items():
-                if demand > 0:
-                    G.add_edge(origin.id, destination.id, weight=demand)
-
-        # Scale edge widths by demand
-        for u, v, data in G.edges(data=True):
-            demand = data['weight']
-            width = (demand / max_demand) * 10
-            nx.draw_networkx_edges(G, pos, edgelist=[(u, v)], width=width, edge_color="red", ax=ax)
-
-        nx.draw_networkx_nodes(G, pos, node_size=300, node_color="black", ax=ax)
-        nx.draw_networkx_labels(G, pos, font_size=10, font_color="white", ax=ax)
-
-        ax.set_title("Origin-Destination Demand")
-        # plt.axis("off")
-        # plt.show()
-
-    def plot_flow(self, ax=None, label_fraction=0.5, round=0):
-        """
-        Plots the transit network with flow values visualized as edge widths and edges colored by lines.
-        Station positions use x and y coordinates if available, edges are curved, and labels are offset to the right.
-        """
-        # Create a figure and axis if not provided
-        if ax is None:
-            _, ax = plt.subplots(figsize=(10, 10))
-
-        # NetworkX graph
-        G = nx.DiGraph()
-
-        # Assign distinct colors to lines
-        line_colors = plt.cm.tab10.colors  # Use colormap (tab10 has 10 distinct colors)
-        line_color_map = {line.id: line_colors[i % len(line_colors)] for i, line in enumerate(self.lines)}
-
-        # Add nodes (stations)
-        pos = {}
-        for station in self.stations:
-            G.add_node(station.id)
-            # Use (x, y) coordinates if available; otherwise, placeholder
-            if station.x is not None and station.y is not None:
-                pos[station.id] = (station.x, station.y)
-            else:
-                pos[station.id] = (station.id, 0)
-
-        # Add edges with flow and line color
-        edge_flows = {}
-        edge_colors = {}
-        for line in self.lines:
-            for i, station in enumerate(line.stations[:-1]):
-                s1 = station.id
-                s2 = line.stations[i + 1].id
-
-                # Fetch the current (flow) for the resistor
-                current_forward = station.lines[line][+1].tt_resistor.total_current
-                current_reverse = line.stations[i + 1].lines[line][-1].tt_resistor.total_current
-
-                # Add forward and reverse edges with flow
-                G.add_edge(s1, s2, weight=current_forward)
-                G.add_edge(s2, s1, weight=current_reverse)
-
-                # Store flows and colors
-                edge_flows[(s1, s2)] = current_forward
-                edge_flows[(s2, s1)] = current_reverse
-                edge_colors[(s1, s2)] = line_color_map[line.id]
-                edge_colors[(s2, s1)] = line_color_map[line.id]
-
-        # Draw nodes
-        nx.draw_networkx_nodes(G, pos, node_size=300, node_color="black", ax=ax)
-        nx.draw_networkx_labels(G, pos, font_size=10, font_color="white", ax=ax)
-
-        # Find the maximum flow to scale edge widths
-        max_flow = max(edge_flows.values()) if edge_flows else 1  # Avoid division by zero
-
-        # Draw curved edges with widths proportional to flows and colored by lines
-        for edge in G.edges(data=True):
-            u, v, _ = edge
-            flow = edge_flows.get((u, v), 0)
-            width = np.round((flow / max_flow) * 7)  # Scale the flow to a max width of 10
-            color = edge_colors.get((u, v), "grey")
-            # Use a curved connection style for bidirectional edges
-            if G.has_edge(v, u):  # Check for reverse edge
-                connectionstyle = "arc3,rad=0.2"  # Arch with curvature radius 0.2
-            else:
-                connectionstyle = "arc3,rad=0"  # Straight line
-            if width > 0:
-                nx.draw_networkx_edges(
-                    G, pos, edgelist=[(u, v)], width=width, edge_color=color, ax=ax,
-                    connectionstyle=connectionstyle,
-                    arrowstyle="simple"  # Fancy arrows
-                )
-        # Offset edge labels to the right of each edge
-        # Position edge labels closer to the start of the edge
-        edge_labels = {(u, v): f"{flow:.{round}f}" for (u, v), flow in edge_flows.items() if flow > 1e-4}
-        for (u, v), label in edge_labels.items():
-            # Calculate edge vector
-            x1, y1 = pos[u]
-            x2, y2 = pos[v]
-            dx, dy = x2 - x1, y2 - y1
-
-            # Scale the vector to be closer to the source node
-            label_pos_x = x1 + label_fraction * dx
-            label_pos_y = y1 + label_fraction * dy
-
-            # Apply a perpendicular offset for clarity
-            length = (dx**2 + dy**2)**0.5
-            offset_x = dy / length * 0.2  # Perpendicular offset (scaled)
-            offset_y = -dx / length * 0.1  # Perpendicular offset (scaled)
-
-            # Final label position
-            label_pos = (label_pos_x + offset_x, label_pos_y + offset_y)
-            ax.text(label_pos[0], label_pos[1], label, fontsize=12, ha="center", va="center")
-
-        # Add legend for line colors
-        legend_elements = [
-            plt.Line2D([0], [0], color=color, lw=2, label=f"Line {line.id}")
-            for line in self.lines if hasattr(line, 'id') for color in [line_color_map[line.id]]
-        ]
-        ax.legend(handles=legend_elements, loc="upper right")
-
-        # Title and cleanup
-        ax.set_title("Transit Network Flows")
-        # plt.axis("off")
-        # plt.show()
+        print(f"Transit network state saved to {filename}.")
+        return network_state

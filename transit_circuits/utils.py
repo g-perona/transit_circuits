@@ -1,4 +1,5 @@
 from transit_circuits.transit_network import Line, Station, TransitNetwork
+from transit_circuits.transit_network_plotter import TransitNetworkPlotter as TNP
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -18,8 +19,8 @@ def _make_stations_cross(D):
 
 def _make_lines_cross(stations):
     return [
-    Line(0, [stations[0], stations[1], stations[2]], avg_speed=10, frequency=1),
-    Line(1, [stations[3], stations[1], stations[4]], avg_speed=20, frequency=2)
+    Line(0, [stations[0], stations[1], stations[2]], avg_speed_kph=10, frequency_vph=1),
+    Line(1, [stations[3], stations[1], stations[4]], avg_speed_kph=20, frequency_vph=2)
     ]
 
 def make_cross():
@@ -58,11 +59,12 @@ def _make_stations_grid(D):
     return stations
 
 def _make_lines_grid(stations):
+    speed_kmh = 40
     return [
-        Line(0, [stations[0], stations[3], stations[7], stations[10]], avg_speed=40, frequency=30),
-        Line(1, [stations[1], stations[4], stations[8], stations[11]], avg_speed=40, frequency=30),
-        Line(2, [stations[2], stations[3], stations[4], stations[5]],  avg_speed=40, frequency=30),
-        Line(3, [stations[6], stations[7], stations[8], stations[9]],  avg_speed=40, frequency=30),
+        Line(0, [stations[0], stations[3], stations[7], stations[10]], avg_speed_kph=speed_kmh, frequency_vph=30),
+        Line(1, [stations[1], stations[4], stations[8], stations[11]], avg_speed_kph=speed_kmh, frequency_vph=30),
+        Line(2, [stations[2], stations[3], stations[4], stations[5]],  avg_speed_kph=speed_kmh, frequency_vph=30),
+        Line(3, [stations[6], stations[7], stations[8], stations[9]],  avg_speed_kph=speed_kmh, frequency_vph=30),
     ]
 
 def make_grid():
@@ -70,7 +72,7 @@ def make_grid():
     stations = _make_stations_grid(D)
     lines = _make_lines_grid(stations)
 
-    return TransitNetwork(D, stations, lines), D, stations, lines
+    return D, stations, lines
 
 def make_grid_OD(tn, tod=None):
     if tod is None:
@@ -79,7 +81,7 @@ def make_grid_OD(tn, tod=None):
             for d in tn.stations:
                 if o == d:
                     continue
-                OD[o][d] = 10
+                OD[o][d] = 100
         
         return OD
     
@@ -115,6 +117,10 @@ def _plot_3x1():
     fig, ax = plt.subplots(1,3,figsize=(18,6))
     return fig, ax
 
+def _plot_4x1():
+    fig, ax = plt.subplots(1,4,figsize=(24,6))
+    return fig, ax
+
 def calculate_total_travel_time(problems):
     total = 0
     for p in problems:
@@ -123,16 +129,20 @@ def calculate_total_travel_time(problems):
     return total
 
 def plot_freq_and_flows(tn):
+    plotter = TNP(tn)
     fig, ax = _plot_2x1()
-    tn.plot_frequency(ax=ax[0])
+    plotter.plot_frequency(ax=ax[0])
     ax[0].set_title("(a) Frequency Plot")
-    tn.plot_flow(ax=ax[1], label_fraction=0.5)
+    plotter.plot_flow(ax=ax[1], label_fraction=0.3)
     ax[1].set_title("(b) Flow Plot")
+    print(tn.lines[3].frequency)
     return fig, ax
 
 def plot_freq_and_var_flows(tn, hw, flows):
     fig, ax = _plot_2x1()
-    tn.plot_frequency(ax=ax[0])
+    plotter = TNP(tn)
+    
+    plotter.plot_frequency(ax=ax[0])
     ax[0].set_title("(a) Frequency Plot")
     
     for flows_l in flows:
@@ -146,7 +156,8 @@ def plot_freq_and_var_flows(tn, hw, flows):
 
 def plot_freq_var_flows_total_time(tn, headways, flows, times):
     fig, ax = _plot_3x1()
-    tn.plot_frequency(ax=ax[0], line_styles={tn.lines[3]: 'solid'})
+    plotter = TNP(tn)
+    plotter.plot_frequency(ax=ax[0])
     ax[0].set_title("(a)")
     # ax[0].set_title("(a) Frequency Plot")
     
@@ -159,7 +170,6 @@ def plot_freq_var_flows_total_time(tn, headways, flows, times):
     ax[1].set_title(f"(b)")
     # ax[1].set_title(f"(b) Varying flows through central links")
     ax[1].set_xscale('log')
-    ax[1].set_yscale('log')
     ax[1].grid(which='both', alpha=0.5)
     ax[1].legend()
 
@@ -169,11 +179,88 @@ def plot_freq_var_flows_total_time(tn, headways, flows, times):
     ax[2].set_title(f"(c)")
     # ax[2].set_title(f"(c) Varying total person-hours of travel")
     ax[2].set_xscale('log')
-    ax[2].set_yscale('log')
     ax[2].grid(which='both', alpha=0.5)
 
     return fig, ax
 
-
-
+def plot_freq_single_od_var_flows_total_time(tn, tn1, headways, flows, times):
+    fig, ax = _plot_4x1()
+    plotter = TNP(tn)
+    plotter1 = TNP(tn1)
     
+    plotter.plot_frequency(ax=ax[0])
+
+    ax[0].set_title("(a)")
+    # ax[0].set_title("(a) Frequency Plot")
+
+    plotter1.plot_flow(ax=ax[1], label_fraction=0.5)
+    ax[1].set_title("(b)")
+
+    ax[2].plot(headways, flows[0], label=r'$3\to 7$')
+    ax[2].plot(headways, flows[2], label=r'$3\to 4$', c='tab:green')
+    ax[2].plot(headways, flows[3], label=r'$7\to 8$', c='tab:red')
+    
+    ax[2].set_xlabel(f"Red Line headway")
+    ax[2].set_ylabel(f"Flows through selected resistors")
+    ax[2].set_title(f"(c)")
+    # ax[2].set_title(f"(b) Varying flows through central links")
+    ax[2].set_xscale('log')
+    ax[2].grid(which='both', alpha=0.5)
+    ax[2].legend()
+
+    ax[3].plot(headways, times)
+    ax[3].set_xlabel(f"Red Line headway")
+    ax[3].set_ylabel(f"Total person-hours of travel")
+    ax[3].set_title(f"(d)")
+    # ax[3].set_title(f"(c) Varying total person-hours of travel")
+    ax[3].set_xscale('log')
+    ax[3].grid(which='both', alpha=0.5)
+
+    return fig, ax
+
+
+def plot_freq_single_od_var_flows(tn, tn1, headways, flows):
+    fig, ax = _plot_3x1()
+    plotter = TNP(tn)
+    plotter1 = TNP(tn1)
+    
+    plotter.plot_frequency(ax=ax[0])
+
+    ax[0].set_title("(a)")
+    # ax[0].set_title("(a) Frequency Plot")
+
+    plotter1.plot_flow(ax=ax[1], label_fraction=0.5, round=0)
+    ax[1].set_title("(b)")
+
+    ax[2].plot(headways, flows[0], label=r'$3\to 7$')
+    ax[2].plot(headways, flows[2], label=r'$3\to 4$', c='tab:green')
+    ax[2].plot(headways, flows[3], label=r'$7\to 8$', c='tab:red')
+    
+    ax[2].set_xlabel(f"Red Line headway (minutes)")
+    ax[2].set_ylabel(f"N. passengers through selected segments")
+    ax[2].set_title(f"(c)")
+    # ax[2].set_title(f"(b) Varying flows through central links")
+    ax[2].set_xscale('log')
+    ax[2].grid(which='both', alpha=0.5)
+    ax[2].legend()
+
+    return fig, ax
+
+def plot_all_subflows(tn):
+    plotter = TNP(tn)
+    axes = []
+    figs = []
+    for i, o in enumerate(tn.stations):
+        fig, ax = plt.subplots(3, 4, figsize=(24,18))
+        for j, d in enumerate(tn.stations):
+            ax_ij = ax[j//4][j%4]
+            if i == j:
+                hws = [l.get_headway() for l in tn.lines]
+                line_ids = [l.id for l in tn.lines]
+                ax_ij.bar(line_ids, hws)
+                continue
+            plotter.plot_flow_one_to_one(ax=ax_ij, origin=o, destination=d)
+        axes.append(ax)
+        figs.append(fig)
+
+    return figs, axes

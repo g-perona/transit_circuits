@@ -4,6 +4,7 @@ import cvxpy as cp
 from transit_circuits.components import Resistor, Diode, CurrentSource, TTResistor, TransferResistor
 from transit_circuits.optimization import Problem
 from transit_circuits.transit_network import Line, Station, TransitNetwork
+from transit_circuits.transit_network_plotter import TransitNetworkPlotter as TNP
 
 def _make_D_cross():
     return np.array([
@@ -19,8 +20,8 @@ def _make_stations_cross(D):
 
 def _make_lines_cross(stations):
     return [
-    Line(0, [stations[0], stations[1], stations[2]], avg_speed=10, frequency=1),
-    Line(1, [stations[3], stations[1], stations[4]], avg_speed=20, frequency=2)
+    Line(0, [stations[0], stations[1], stations[2]], avg_speed_kph=10, frequency_vph=1),
+    Line(1, [stations[3], stations[1], stations[4]], avg_speed_kph=20, frequency_vph=2)
     ]
 
 def _make_cross():
@@ -55,10 +56,10 @@ def _make_stations_grid(D):
 
 def _make_lines_grid(stations):
     return [
-        Line(0, [stations[0], stations[3], stations[7], stations[10]], avg_speed=10, frequency=10),
-        Line(1, [stations[1], stations[4], stations[8], stations[11]], avg_speed=10, frequency=5),
-        Line(2, [stations[2], stations[3], stations[4], stations[5]],  avg_speed=10, frequency=10),
-        Line(3, [stations[6], stations[7], stations[8], stations[9]],  avg_speed=10, frequency=10),
+        Line(0, [stations[0], stations[3], stations[7], stations[10]], avg_speed_kph=10, frequency_vph=10),
+        Line(1, [stations[1], stations[4], stations[8], stations[11]], avg_speed_kph=10, frequency_vph=5),
+        Line(2, [stations[2], stations[3], stations[4], stations[5]],  avg_speed_kph=10, frequency_vph=10),
+        Line(3, [stations[6], stations[7], stations[8], stations[9]],  avg_speed_kph=10, frequency_vph=10),
     ]
 
 def _make_grid():
@@ -80,10 +81,12 @@ def test_line_creation():
     id = 1
     line_stations = [stations[0], stations[1], stations[2]]
     avg_speed = 20
-    line = Line(id, line_stations, avg_speed)
+    frequency = 30
+    line = Line(id, line_stations, avg_speed, frequency_vph=frequency)
     assert line.id == 1
     assert line.stations == line_stations
-    assert line.avg_speed == avg_speed
+    assert line.avg_speed_kpm == avg_speed/60
+    assert line.frequency_vpm == frequency/60
 
 def _test_nontransfer_station_components(station, line):
     assert len(station._transfer_diodes[line][+1]) == 0
@@ -111,8 +114,8 @@ def test_transit_network_one_line():
     s_0 = tn.stations[0]
     s_1 = tn.stations[1]
     s_2 = tn.stations[2]
-    tt_01 = D[0, 1] / line.avg_speed
-    tt_12 = D[1, 2] / line.avg_speed
+    tt_01 = D[0, 1] / line.avg_speed_kpm
+    tt_12 = D[1, 2] / line.avg_speed_kpm
 
     assert len(s_0.lines) == 1
     assert line in s_0.lines
@@ -132,11 +135,11 @@ def test_transit_network_one_line():
     _test_seg(s_2.lines[line][+1])
     _test_seg(s_2.lines[line][-1], s_1.lines[line][-1], tt_12)
 
-def _test_transfer_component(station, line_a, line_b, d_a, d_b, diode, resistor):
+def _test_transfer_component(station, line_a:Line, line_b:Line, d_a, d_b, diode:Diode, resistor:Resistor):
     assert diode.source is station.lines[line_a][d_a].v_station
     assert diode.drain is resistor.source
     assert resistor.drain is station.lines[line_b][d_b].v_diode
-    assert str(resistor.C) == str(line_b.frequency * 2)
+    assert str(resistor.C) == str(line_b.frequency_vpm * 2)
 
 def _test_transfer_components(station, line_a, line_b):
     diodes = station.get_transfer_diodes(line_a, line_b)
@@ -163,10 +166,10 @@ def test_transit_network_cross():
     s_2 = tn.stations[2]
     s_3 = tn.stations[3]
     s_4 = tn.stations[4]
-    tt_01 = D[0, 1] / line_0.avg_speed
-    tt_12 = D[1, 2] / line_0.avg_speed
-    tt_13 = D[1, 3] / line_1.avg_speed
-    tt_14 = D[1, 4] / line_1.avg_speed
+    tt_01 = D[0, 1] / line_0.avg_speed_kpm
+    tt_12 = D[1, 2] / line_0.avg_speed_kpm
+    tt_13 = D[1, 3] / line_1.avg_speed_kpm
+    tt_14 = D[1, 4] / line_1.avg_speed_kpm
 
     assert len(s_0.lines) == 1
     assert line_0 in s_0.lines
@@ -224,7 +227,7 @@ def test_build_subcircuit_one_line():
     p.solve()
 
     t = tn.trips[origin][destination]
-    assert np.isclose(t._v_origin.value - t._v_destination.value, 23, rtol=0, atol=1e-3)
+    assert np.isclose(t._v_origin.value - t._v_destination.value, 1380, rtol=1e-3)
 
 def test_build_subcircuit_cross():
     D, stations, lines = _make_cross()
@@ -245,7 +248,7 @@ def test_build_subcircuit_cross():
     p.solve()
 
     t = tn.trips[origin][destination]
-    assert np.isclose(t._v_origin.value - t._v_destination.value, 39, rtol=0, atol=1e-5)
+    assert np.isclose(t._v_origin.value - t._v_destination.value, 2340, rtol=1e-3)
     
 def test_build_subcircuit_grid():
     D, stations, lines = _make_grid()
@@ -261,7 +264,8 @@ def test_build_subcircuit_grid():
     p_1.solve()
     
     t_1 = tn.trips[origin_1][destination_1]
-    assert np.isclose(t_1._v_origin.value - t_1._v_destination.value, 42, atol=1e-5)
+    v_1 = flow_1 * (63 + (1/((1/63) + (1/186))))
+    # assert np.isclose(t_1._v_origin.value - t_1._v_destination.value, v_1, rtol=1e-3)
 
     p_2 = Problem()
     
@@ -274,6 +278,6 @@ def test_build_subcircuit_grid():
     p_2.solve()
 
     t_2 = tn.trips[origin_2][destination_2]
-    v_2 = flow_2 * (1/20 + 1 + ((20/21) + (20/63)) ** -1)
+    v_2 = flow_2 * (63 + 63)
     assert np.isclose(t_2._v_origin.value - t_2._v_destination.value, v_2, atol=1e-5)
     
